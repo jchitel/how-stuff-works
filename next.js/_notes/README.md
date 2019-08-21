@@ -95,7 +95,7 @@ The constructor effectively just initializes the list of variables above. We'll 
 #### Configuration Loading
 
 The configuration is loaded using the `loadConfig()` function (from `next-server/server/config`). This function takes:
-* A `phase` string, which is only used when the user-specified configuration returns a function. The phase is passed as the first parameter to the configuration function, and there is one phase for each command: `phase-export`, `phase-production-build`, `phase-production-server`, and `phase-development-server`.
+* A `phase` string, which is only used when the user-specified configuration returns a function. The phase is passed as the first parameter to the configuration function, and there is one phase for each command: `phase-export` (`next export`), `phase-production-build` (`next build`), `phase-production-server` (`next start`), and `phase-development-server` (`next dev`).
 * `dir`, which is the same variable that we've seen before, the directory to look for a next.config.js file. However, `loadConfig()` will actually search up the directory hierarchy until it finds one.
 * `customConfig`, which is an optional config object that will have defaults applied to it, overriding the normal config lookup.
 
@@ -144,6 +144,71 @@ If `amp.canonicalBase` was provided, any trailing slash is removed.
 An error is then thrown if the user specified both `target = 'serverless'` and a non-empty `publicRuntimeConfig`.
 
 The defaults are then assigned, and the result is returned.
+
+### Intializing the Router
+
+The other big item that the server does in the constructor is initialize the router.
+
+First, the routes are generated. Each route consists of two functions: a matcher (to determine if a given path matches the route) and a handler (to handle the request when that route is matched). There are four base routes that are always included:
+* `/_next/static/:path*`: this path is for internal Next static resources. When we say "static" we mean direct references to files on the file system, as opposed to dynamic content like an API call or a page in the app. These requests route to a `static` directory in the `distDir`, defaulting to `~/_next/static/`. Moreover, if the requested files match `~/_next/static/(runtime|chunks|{BUILD_ID})/`, they are set to be immutably cached, telling the browser that they will never change. This means that Next uses some unique identifier like a hash to ensure that whenver this content changes, it will have a different path.
+* `/_next/:path*`: This path simply renders a 404. The comments inidicate that this path is hit internally before trying the router again, so we'll probably discover what this is for in time. This is likely in place so that requests to pages don't accidentally allow a page to be called `/_next`.
+* `/static/:path*`: The user is allowed to place public static resources (such as images) in `~/static`, which will be returned for this path.
+* `/api/:path*`: All API requests are placed under the `/api/` path. This indicates that the request should be handled by a user-defined API endpoint.
+
+Additionally, the development server places the following path before all of these:
+* `/_next/development/:path*`: These are static files used only by the development server, and are routed to `~/_next/`.
+
+If the user enables the experimental `publicDirectory` configuration (false by default), then they can serve static files from `~/public/`. Each file in this directory is set up with its own route, mapped relative to `~/public/`, meaning that a file at `~/public/image.jpg` can be accessed using `{site}/image.jpg`. This is a way to serve static files without the `/static/` prefix.
+
+If the user enables the `useFileSystemPublicRoutes` configuration (true by default), this enables file system routing for pages in the `~/pages/` directory. A catch-all route `/:path*` is added which forwards requests to the server-side rendering logic of Next. This also pre-computes the list of dynamic routes (routes containing parameters) available in the app and stores them for later use.
+
+After the routes are generated, we create a `Router` (`next-server/server/router`) from those routes. This simply stores that list internally.
+
+### Initializing the `DevServer`
+
+All of that happened in the `Server` constructor. This is called by the `DevServer` constructor before doing its own initialization.
+
+Before we go into that, we'll list out the `Server` methods that are overridden by `DevServer`:
+* `currentPhase()`: this is the phase that is provided to a dynamic configuration. `Server` returns `phase-production-server` and `DevServer` returns `phase-development-server`.
+* `readBuildId()`: the prouduction server must be run against a production build, which produces a file called `~/_next/BUILD_ID` containing the identifier for the build. The development server is run against source, so this file is not guaranteed to exist. Thus, `DevServer` overrides this method to simply return `development`.
+* `run()`: The development server requires a few more steps before it is ready to serve, most notably it requires starting the hot reloader and source file watcher. The hot reloader may also return `finished: true`, which will stop the app before it starts (not sure what triggers this yet). If not, `super.run()` is called normally.
+* `generateRoutes()`: this adds the `/_next/development/:path*` route before all the other routes.
+* `generatePublicRoutes()`: this returns an empty list, because public files are handled as a fallback in development mode.
+* `getDynamicRoutes()`: in development, dynamic routes can't be known ahead of time, so this also returns an empty list.
+* `resolveApiRequest()`: this calls into the hot reloader for the request before doing the normal resolution.
+* `renderToHTML()`: this will return developer-assisting pages instead of simple 404s. This also handles dynamic and public routes, before falling back to the normal method.
+* `renderErrorToHTML()`: this also returns developer-assisting pages instead of simple 404s.
+* `sendHTML()`: this overrides the cache control header to not cache in development.
+* `setImmutableAssetCacheControl()`: this overrides the cache control header for internal static files to not cache in development.
+
+So the development server adds and overrides a bit of logic from the production server, primarily because everything in development mode is generated dynamically, while in production everything is expected to be pre-compiled.
+
+In its constructor, `DevServer` sets `renderOpts.dev` to true, adds a validator for AMP pages (which should obviously not be run in production), and sets a promise called `devReady`, with the `resolve()` attached to a method `this.setDevReady()`. `devReady` is awaited in `DevServer.run()` before doing anything else, and `this.setDevReady()` is called at the end of `DevServer.prepare()`. This ensures that the server doesn't actually do anything until initial setup logic is done.
+
+### Preparing the `DevServer`
+
+As we saw before, `next dev` will create the `DevServer` and then call `DevServer.prepare()`. This method is only defined on `DevServer`, and is responsible for performing asynchronous initial setup.
+
+The first step of the preparation is "verifying the typescript setup". This step first checks for either a `tsconfig.json` or any file with an extension of `.ts` or `.tsx` (ignoring `.d.ts` and `node_modules`). If neither is found, the step is skipped. If either is found, the following is done:
+1. verify that you have `typescript`, `@types/react`, and `@types/node` installed (if not, fail with error)
+2. write a default `tsconfig.json` if you don't have one yet
+3. verify that your `tsconfig.json` is valid. NOTE: this ignores the error that no inputs are defined, because Next takes care of this manually
+4. write suggested values to your `tsconfig.json` if they are not currently set that way
+5. write a `next-env.d.ts` file at the root of your project referencing `next` and `next/types/global`
+
+Then, the hot reloader is initialized. The `HotReloader` class is defined in `next/server/hot-reloader`. The constructor takes 3 parameters: `dir` (the base directory of the project), `config` (the Next config from the server), and `buildId` (which will always be `development` in this case). All that happens here is that some properties are initialized.
+
+The next step is "adding exportPathMap routes". This feature brings compatibility with `next export`. The user can optionally define an `exportPathMap` property in their Next configuration. This property is an async function that allows defining static routes to pages in the app. In `next export`, a default path map is generated based on the files in the `pages/` directory, and this function allows modifying that map. In development mode, this function is used to simply add those routes to the router. If the user does not define `exportPathMap`, this step is skipped.
+
+Now, we're ready to start the `HotReloader` by calling `HotReloader.start()`.
+
+#### Starting the `HotReloader`
+
+First, the hot reloader clears the dist directory.
+
+Then, it sets up webpack. This involves several steps. First, we need the webpack configurations, one for the client and one for the server. These configurations require entrypoints. To do this, the hot reloader creates a "page mapping", which is a mapping from the normalized path of a page (relative to the root of the app) to its actual resolvable path. In this case, we only create a page mapping for the three special pages: `/_app`, `/_document`, and `/_error`. If the user has defined their own `/_app` or `/_document` page, the path mapping will contain `private-next-pages/{_app|_document}.tsx`, where `private-next-pages` is an alias to the user's pages directory. If the user has not defined their own versions of these pages, the default Next ones are used (located in `next/dist/pages/`). This page mapping is then passed into `createEndpoints`, which generates a set of client and server entrypoints for the webpack configurations. The page mapping is iterated, and for each page an entrypoint:
+* if the page is an API endpoint and the specified target is serverless, it is added to the server entry points with the `next-serverless-loader` as a loader
+* else if the page is an API endpoint (meaning the target is server), 
 
 
 
