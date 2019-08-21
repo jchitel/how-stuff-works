@@ -206,9 +206,28 @@ Now, we're ready to start the `HotReloader` by calling `HotReloader.start()`.
 
 First, the hot reloader clears the dist directory.
 
-Then, it sets up webpack. This involves several steps. First, we need the webpack configurations, one for the client and one for the server. These configurations require entrypoints. To do this, the hot reloader creates a "page mapping", which is a mapping from the normalized path of a page (relative to the root of the app) to its actual resolvable path. In this case, we only create a page mapping for the three special pages: `/_app`, `/_document`, and `/_error`. If the user has defined their own `/_app` or `/_document` page, the path mapping will contain `private-next-pages/{_app|_document}.tsx`, where `private-next-pages` is an alias to the user's pages directory. If the user has not defined their own versions of these pages, the default Next ones are used (located in `next/dist/pages/`). This page mapping is then passed into `createEndpoints`, which generates a set of client and server entrypoints for the webpack configurations. The page mapping is iterated, and for each page an entrypoint:
-* if the page is an API endpoint and the specified target is serverless, it is added to the server entry points with the `next-serverless-loader` as a loader
-* else if the page is an API endpoint (meaning the target is server), 
+Then, it sets up Webpack.
+
+##### Setting up Webpack
+
+First, we need the webpack configurations, one for the client and one for the server. These configurations require entrypoints.
+
+To get the entrypoints, the hot reloader creates a "page mapping", which is a mapping from the normalized path of a page (what the user sees in the URL) to its actual resolvable path. In this case, we only create a page mapping for the three special pages: `/_app`, `/_document`, and `/_error`. If the user has defined their own `/_app` or `/_document` page, the path mapping will contain `private-next-pages/{_app|_document}.tsx`, where `private-next-pages` is an alias to the user's pages directory. If the user has not defined their own versions of these pages, the default Next ones are used (located in `next/dist/pages/`).
+
+This page mapping is then passed into `createEntrypoints`, which generates a set of client and server entrypoints for the webpack configurations. The resulting entrypoints depend heavily on:
+* whether the target is `server` or `serverless`
+* whether a given page is an API route or a regular page
+* whether a given page is a special page (`_app`, `_document`, `_error`) or not
+
+We'll focus on the `server` target, since that is hardcoded in the `HotReloader`. In this case, all specified pages (in our case, just the special ones) are added as a server entrypoint. The key (in Webpack, this is just a name, but Next seems to set this to the output bundle) is `static/{buildId}/pages/{page}.js` (`buildId` is always `development`, so `static/development/pages/{page}.js`), and the value is the absolute path (same as the values in the path mapping). For the client entrypoints, all pages are added except `/_document`. The key is the same as the server, but the value is `next-client-pages-loader?page={pathMappingKey}&absolutePagePage={pathMappingValue}`. The `next-client-pages-loader` is a Next-internal loader that imports the specified page and wires it to the hot reloader and the router. More details will be given on this in due time.
+
+Back in the `HotReloader`, an additional client endpoint is added, with the key set to `static/runtime` and the value set to `./node_modules/next/dist/client/dev/amp-dev`. This contains some boilerplate for AMP.
+
+Now that we have our entrypoints, we call `getBaseWebpackConfig()` twice: one with `isServer` set to false, and one set to true, passing in the corresponding entrypoints. What follows is an obnoxiously long function that warrants its own [file](./webpack-config.md). The function returns a `webpack.Configuration`.
+
+Once we have the client and server webpack configs, we call `webpack()` with them, returning a `webpack.MultiCompiler` that can run those configurations in parallel.
+
+---
 
 
 
