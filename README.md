@@ -19,11 +19,11 @@ Each project has its own directory in this repository, containing:
 ## Current Projects Documented
 
 * [Next.js](./next.js/README.md) ([repo](https://github.com/zeit/next.js)) (IN PROGRESS)
+* [Webpack](./webpack/README.md) ([repo](https://github.com/webpack/webpack)) (IN PROGRESS)
 
 ## Future Projects I Want To Document
 
 * [React](https://github.com/facebook/react)
-* [Webpack](https://github.com/webpack/webpack)
 * [Electron](https://github.com/electron/electron)
 * [Parcel](https://github.com/parcel-bundler/parcel) (once it hits 2.0)
 * [Node.js](https://github.com/nodejs/node)
