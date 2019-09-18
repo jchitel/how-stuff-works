@@ -20,6 +20,7 @@ Each project has its own directory in this repository, containing:
 
 * [Next.js](./next.js/README.md) ([repo](https://github.com/zeit/next.js)) (IN PROGRESS)
 * [Webpack](./webpack/README.md) ([repo](https://github.com/webpack/webpack)) (IN PROGRESS)
+* [fp-ts](./fp-ts/README.md) ([repo](https://github.com/gcanti/fp-ts)) (IN PROGRESS)
 
 ## Future Projects I Want To Document
 
